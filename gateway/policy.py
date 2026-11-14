@@ -43,6 +43,7 @@ class Policy:
     require_approval: list = field(default_factory=list)
     deny_when_tainted: list = field(default_factory=list)
     budgets: dict = field(default_factory=dict)
+    costs: dict = field(default_factory=dict)  # tool -> dollars per call
     kill_switch: bool = False
 
     @classmethod
@@ -54,6 +55,7 @@ class Policy:
             require_approval=data.get("require_approval", []),
             deny_when_tainted=data.get("deny_when_tainted", []),
             budgets=data.get("budgets", {}),
+            costs=data.get("costs", {}),
             kill_switch=bool(data.get("kill_switch", False)),
         )
 
@@ -61,6 +63,17 @@ class Policy:
     def from_file(cls, path: str | Path) -> "Policy":
         return cls.from_dict(
             yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {})
+
+    def cost_of(self, tool: str) -> float:
+        """What one call of this tool costs (dollars)."""
+        return float(self.costs.get(tool, 0.0))
+
+    def rows_of(self, tool: str, args: dict) -> int:
+        """How many rows this call reads. A read tool reads the rows
+        it asked for (its limit, default 1); anything else reads 0."""
+        if not any(word in tool for word in ("read", "list", "get")):
+            return 0
+        return int(args.get("limit", args.get("max_rows", 1)))
 
 
 def _domain_of(to: str) -> str:

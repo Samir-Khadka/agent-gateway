@@ -92,10 +92,32 @@ Admin endpoints (need `X-Admin-Key`): `GET /admin/audit`,
 `GET /admin/audit/verify`, `POST /admin/kill/{agent}`,
 `POST /admin/revive/{agent}`, `GET /admin/policies`.
 
+## v0.2 — policy tests and budgets (Phase 2)
+
+- **Policy test suite.** Prove a policy does what it says before an
+  agent ever runs under it. Cases are YAML (`tool`, `args`, `tainted`,
+  `expected`); run them with:
+
+  ```bash
+  python -m gateway.test_policy policies/support-bot.yaml \
+    tests/policies/support-bot.cases.yaml
+  ```
+
+  Exit 0 when every case passes. The support bot's nine cases cover
+  the row limit, the domain rule, the refund threshold, the unknown
+  tool, and both taint cases.
+- **Spend budgets.** Each tool has a cost (`costs:` in the policy);
+  `budgets.max_spend` stops the agent when it has spent that much.
+- **Row budgets.** `budgets.max_rows_read` caps how many rows an
+  agent may read (a read counts the rows it asked for).
+- **Per-tool rate limits.** `budgets.rate_limits` caps calls per
+  minute per tool — the answer to a runaway loop repeating a costly
+  action.
+- Spend and rows are recorded in the audit log, so budgets survive
+  a gateway restart.
+
 ## Roadmap
 
-- **v0.2 (Phase 2)** — argument-level policy test suite, spend and
-  row budgets, per-tool rate limits.
 - **v0.3 (Phase 3)** — taint tracking (a session that touched
   untrusted content gets tighter rules), egress allowlist, Telegram
   and Slack approvals.

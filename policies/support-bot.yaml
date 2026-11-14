@@ -20,3 +20,10 @@ deny_when_tainted:
     where: { to_domain_not: ["company.com"] }
 budgets:
   max_calls: 100
+  max_spend: 5.00
+  max_rows_read: 1000
+  rate_limits: { email.send: 10 }
+costs:
+  crm.read_customer: 0.01
+  email.send: 0.02
+  refund.create: 0.05

@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from collections import defaultdict, deque
 from pathlib import Path
 
 import httpx
@@ -51,9 +53,17 @@ class Gateway:
         self.admin_key = admin_key or os.environ.get("GATEWAY_ADMIN_KEY")
         self.policies = self._load_policies()
         self.calls_made: dict[str, int] = {}
+        self.spend: dict[str, float] = {}
+        self.rows_read: dict[str, int] = {}
+        # (agent, tool) -> timestamps of recent calls, for rate limits
+        self.call_times: dict[tuple[str, str], deque] = defaultdict(deque)
         for entry in self.audit.read():
-            self.calls_made[entry["agent"]] = \
-                self.calls_made.get(entry["agent"], 0) + 1
+            agent = entry["agent"]
+            self.calls_made[agent] = self.calls_made.get(agent, 0) + 1
+            self.spend[agent] = self.spend.get(agent, 0.0) + \
+                float(entry.get("cost", 0.0))
+            self.rows_read[agent] = self.rows_read.get(agent, 0) + \
+                int(entry.get("rows", 0))
         self.killed = self._load_killed()
 
     def _load_policies(self) -> dict[str, Policy]:
@@ -93,19 +103,51 @@ class Gateway:
         self.killed.discard(agent)
         self._save_killed()
 
-    def check_budget(self, agent: str, policy: Policy) -> str | None:
-        """A reason to deny, or None when the budget allows the call."""
-        max_calls = (policy.budgets or {}).get("max_calls")
+    def check_budget(self, agent: str, policy: Policy, tool: str = "",
+                     args: dict | None = None) -> str | None:
+        """A reason to deny, or None when the budgets allow the call.
+        Checks the call budget, the spend budget, the row budget, and
+        the per-tool rate limit, in that order."""
+        budgets = policy.budgets or {}
+        max_calls = budgets.get("max_calls")
         if max_calls is not None and \
                 self.calls_made.get(agent, 0) >= int(max_calls):
-            return (f"call budget exhausted ({max_calls} calls)")
+            return f"call budget exhausted ({max_calls} calls)"
+        max_spend = budgets.get("max_spend")
+        if max_spend is not None and tool:
+            if self.spend.get(agent, 0.0) + policy.cost_of(tool) \
+                    > float(max_spend):
+                return (f"spend budget exhausted "
+                        f"(${self.spend.get(agent, 0.0):.2f} of "
+                        f"${float(max_spend):.2f})")
+        max_rows = budgets.get("max_rows_read")
+        if max_rows is not None and tool and args is not None:
+            if self.rows_read.get(agent, 0) + \
+                    policy.rows_of(tool, args) > int(max_rows):
+                return (f"row budget exhausted "
+                        f"({self.rows_read.get(agent, 0)} of {max_rows} "
+                        f"rows)")
+        rate_limits = budgets.get("rate_limits") or {}
+        if tool and tool in rate_limits:
+            window = self.call_times[(agent, tool)]
+            now = time.monotonic()
+            while window and window[0] <= now - 60:
+                window.popleft()
+            if len(window) >= int(rate_limits[tool]):
+                return (f"rate limit: {tool} is limited to "
+                        f"{rate_limits[tool]} calls per minute")
         return None
+
+    def record_call(self, agent: str, tool: str) -> None:
+        """Count a completed call for the rate limiter."""
+        self.call_times[(agent, tool)].append(time.monotonic())
+        self.calls_made[agent] = self.calls_made.get(agent, 0) + 1
 
     def decide(self, agent: str, policy: Policy, tool: str,
                args: dict, tainted: bool = False) -> Decision:
         if agent in self.killed or policy.kill_switch:
             return Decision("deny", "kill switch is on for this agent")
-        budget = self.check_budget(agent, policy)
+        budget = self.check_budget(agent, policy, tool, args)
         if budget:
             return Decision("deny", budget)
         return evaluate(policy, tool, args, tainted=tainted)
@@ -125,7 +167,7 @@ class Gateway:
 
 
 def create_app(gateway: Gateway) -> FastAPI:
-    app = FastAPI(title="Agent Gateway", version="0.1.0")
+    app = FastAPI(title="Agent Gateway", version="0.2.0")
 
     def _agent(request: Request) -> str:
         key = request.headers.get("x-agent-key")
@@ -188,11 +230,15 @@ def create_app(gateway: Gateway) -> FastAPI:
                  "reason": decision.reason,
                  "tool": tool, "arguments": args})
         upstream = await gateway.forward("tools/call", params)
-        gateway.calls_made[agent] = \
-            gateway.calls_made.get(agent, 0) + 1
+        gateway.record_call(agent, tool)
+        cost = policy.cost_of(tool)
+        rows = policy.rows_of(tool, args)
+        gateway.spend[agent] = gateway.spend.get(agent, 0.0) + cost
+        gateway.rows_read[agent] = gateway.rows_read.get(agent, 0) + rows
         result_text = json.dumps(upstream.get("result", {}))[:500]
         gateway.audit.append(agent, tool, args, "allow",
-                             decision.reason, result=result_text)
+                             decision.reason, result=result_text,
+                             cost=cost, rows=rows)
         return JSONResponse(upstream)
 
     @app.get("/admin/audit")
