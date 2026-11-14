@@ -1,0 +1,22 @@
+# Example policy, as users would write it (from the project plan).
+# A support bot may read customers and email inside the company, may
+# refund small amounts, and needs a human for refunds over 100. Once
+# it has touched untrusted content it may not email outside the
+# company at all. Anything not listed here is denied.
+agent: support-bot
+risk_tier: medium
+allow:
+  - tool: crm.read_customer
+    limits: { max_rows: 20 }
+  - tool: email.send
+    where: { to_domain: ["company.com"] }
+  - tool: refund.create
+    when: { amount_lte: 100 }
+require_approval:
+  - tool: refund.create
+    when: { amount_gt: 100 }
+deny_when_tainted:
+  - tool: email.send
+    where: { to_domain_not: ["company.com"] }
+budgets:
+  max_calls: 100
