@@ -31,8 +31,11 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from .approvals import ApprovalStore
 from .audit import AuditLog
+from .egress import check_egress
 from .policy import Decision, Policy, evaluate
+from .taint import TaintTracker, result_is_untrusted
 
 UPSTREAM_TIMEOUT = 30.0
 
@@ -43,7 +46,10 @@ class Gateway:
     def __init__(self, policy_dir: str | Path, keys: dict[str, str],
                  upstream_url: str, audit_path: str | Path,
                  data_dir: str | Path = "data",
-                 admin_key: str | None = None):
+                 admin_key: str | None = None,
+                 telegram_token: str | None = None,
+                 telegram_chat_id: str | None = None,
+                 telegram_webhook_secret: str | None = None):
         self.policy_dir = Path(policy_dir)
         self.keys = keys  # api key -> agent id
         self.upstream_url = upstream_url
@@ -51,6 +57,14 @@ class Gateway:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.admin_key = admin_key or os.environ.get("GATEWAY_ADMIN_KEY")
+        self.telegram_token = telegram_token or \
+            os.environ.get("TELEGRAM_BOT_TOKEN")
+        self.telegram_chat_id = telegram_chat_id or \
+            os.environ.get("TELEGRAM_CHAT_ID")
+        self.telegram_webhook_secret = telegram_webhook_secret or \
+            os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+        self.taint = TaintTracker(self.data_dir / "tainted.json")
+        self.approvals = ApprovalStore(self.data_dir / "approvals.json")
         self.policies = self._load_policies()
         self.calls_made: dict[str, int] = {}
         self.spend: dict[str, float] = {}
@@ -103,6 +117,20 @@ class Gateway:
         self.killed.discard(agent)
         self._save_killed()
 
+    def notify_approval(self, approval) -> None:
+        """Tell a human a call is waiting. Telegram when it is
+        configured; otherwise the approval simply waits in the admin
+        API. A failed send never blocks the hold itself."""
+        if not (self.telegram_token and self.telegram_chat_id):
+            return
+        try:
+            from .telegram import send_approval_request
+            send_approval_request(self.telegram_token,
+                                  self.telegram_chat_id, approval)
+        except Exception as e:
+            print(f"agent-gateway: telegram notify failed — {e}",
+                  file=__import__("sys").stderr)
+
     def check_budget(self, agent: str, policy: Policy, tool: str = "",
                      args: dict | None = None) -> str | None:
         """A reason to deny, or None when the budgets allow the call.
@@ -144,13 +172,26 @@ class Gateway:
         self.calls_made[agent] = self.calls_made.get(agent, 0) + 1
 
     def decide(self, agent: str, policy: Policy, tool: str,
-               args: dict, tainted: bool = False) -> Decision:
+               args: dict, session_id: str = "default") -> Decision:
+        """Decide one call for one session. Order: kill switch, then
+        budgets, then the policy (whose taint rules fire first when
+        the session is tainted — so an injection's exfiltration is
+        reported as tainted, not as a generic deny), and finally the
+        egress allowlist, which blocks calls the policy would
+        otherwise allow from reaching an outside destination."""
         if agent in self.killed or policy.kill_switch:
             return Decision("deny", "kill switch is on for this agent")
         budget = self.check_budget(agent, policy, tool, args)
         if budget:
             return Decision("deny", budget)
-        return evaluate(policy, tool, args, tainted=tainted)
+        tainted = self.taint.is_tainted(session_id)
+        decision = evaluate(policy, tool, args, tainted=tainted)
+        if decision.outcome != "allow":
+            return decision
+        egress = check_egress(policy.egress_allowlist, tool, args)
+        if egress:
+            return Decision("deny", egress)
+        return decision
 
     async def forward(self, method: str, params: dict) -> dict:
         """Forward a JSON-RPC request to the upstream MCP server."""
@@ -167,7 +208,7 @@ class Gateway:
 
 
 def create_app(gateway: Gateway) -> FastAPI:
-    app = FastAPI(title="Agent Gateway", version="0.2.0")
+    app = FastAPI(title="Agent Gateway", version="0.3.0")
 
     def _agent(request: Request) -> str:
         key = request.headers.get("x-agent-key")
@@ -216,18 +257,53 @@ def create_app(gateway: Gateway) -> FastAPI:
 
         tool = params.get("name", "")
         args = params.get("arguments", {}) or {}
-        decision = gateway.decide(agent, policy, tool, args)
+        session_id = request.headers.get("x-session-id", "default")
+        tainted = gateway.taint.is_tainted(session_id)
+
+        # Re-sending a held call with its approval id: if a human
+        # approved it, run it now (bypassing the approval rule);
+        # if denied or still pending, refuse or hold again.
+        approval_id = params.get("approval_id")
+        approved_resend = False
+        if approval_id:
+            approval = gateway.approvals.get(approval_id)
+            if approval is None:
+                return _rpc_error(-32000,
+                                  f"unknown approval id: {approval_id}")
+            if approval.status == "denied":
+                gateway.audit.append(agent, tool, args, "deny",
+                                     "approval was denied",
+                                     tainted=tainted)
+                return _rpc_error(
+                    -32000, "blocked by Agent Gateway: approval was denied")
+            if approval.status == "pending":
+                return _rpc_result(
+                    {"held_for_approval": True,
+                     "reason": approval.reason,
+                     "approval_id": approval.id})
+            # approved: skip the policy decision below and forward
+            approved_resend = True
+
+        if approved_resend:
+            decision = Decision("allow", "approved by a human")
+        else:
+            decision = gateway.decide(agent, policy, tool, args,
+                                      session_id=session_id)
         if decision.outcome == "deny":
             gateway.audit.append(agent, tool, args, "deny",
-                                 decision.reason)
+                                 decision.reason, tainted=tainted)
             return _rpc_error(-32000,
                               f"blocked by Agent Gateway: {decision.reason}")
         if decision.outcome == "require_approval":
+            approval = gateway.approvals.request(
+                agent, session_id, tool, args, decision.reason)
             gateway.audit.append(agent, tool, args, "require_approval",
-                                 decision.reason)
+                                 decision.reason, tainted=tainted)
+            gateway.notify_approval(approval)
             return _rpc_result(
                 {"held_for_approval": True,
                  "reason": decision.reason,
+                 "approval_id": approval.id,
                  "tool": tool, "arguments": args})
         upstream = await gateway.forward("tools/call", params)
         gateway.record_call(agent, tool)
@@ -238,7 +314,12 @@ def create_app(gateway: Gateway) -> FastAPI:
         result_text = json.dumps(upstream.get("result", {}))[:500]
         gateway.audit.append(agent, tool, args, "allow",
                              decision.reason, result=result_text,
-                             cost=cost, rows=rows)
+                             tainted=tainted, cost=cost, rows=rows)
+        # A result from an untrusted source taints the session, so
+        # the next call faces the tighter rules.
+        if result_is_untrusted(tool, upstream,
+                               set(policy.taint_sources)):
+            gateway.taint.taint(session_id)
         return JSONResponse(upstream)
 
     @app.get("/admin/audit")
@@ -268,5 +349,69 @@ def create_app(gateway: Gateway) -> FastAPI:
     def policies(request: Request):
         _admin(request)
         return {"agents": sorted(gateway.policies)}
+
+    @app.get("/admin/sessions/{session_id}/taint")
+    def session_taint(session_id: str, request: Request):
+        _admin(request)
+        return {"session_id": session_id,
+                "tainted": gateway.taint.is_tainted(session_id)}
+
+    @app.post("/admin/sessions/{session_id}/taint")
+    def taint_session(session_id: str, request: Request):
+        _admin(request)
+        gateway.taint.taint(session_id)
+        return {"session_id": session_id, "tainted": True}
+
+    @app.post("/admin/sessions/{session_id}/clear")
+    def clear_session(session_id: str, request: Request):
+        _admin(request)
+        gateway.taint.clear(session_id)
+        return {"session_id": session_id, "tainted": False}
+
+    @app.get("/admin/approvals")
+    def list_approvals(request: Request):
+        _admin(request)
+        from dataclasses import asdict
+        return {"pending": [asdict(a) for a in gateway.approvals.pending()]}
+
+    @app.post("/admin/approvals/{approval_id}/approve")
+    def approve_approval(approval_id: str, request: Request):
+        _admin(request)
+        approval = gateway.approvals.resolve(approval_id, True, "admin")
+        if approval is None:
+            raise HTTPException(404, "no such pending approval")
+        return {"approval_id": approval_id, "status": "approved"}
+
+    @app.post("/admin/approvals/{approval_id}/deny")
+    def deny_approval(approval_id: str, request: Request):
+        _admin(request)
+        approval = gateway.approvals.resolve(approval_id, False, "admin")
+        if approval is None:
+            raise HTTPException(404, "no such pending approval")
+        return {"approval_id": approval_id, "status": "denied"}
+
+    @app.post("/telegram/webhook")
+    async def telegram_webhook(request: Request):
+        """Telegram sends button taps here. If a webhook secret is
+        configured, Telegram must send it in the
+        X-Telegram-Bot-Api-Secret-Token header."""
+        if gateway.telegram_webhook_secret:
+            secret = request.headers.get(
+                "x-telegram-bot-api-secret-token", "")
+            if secret != gateway.telegram_webhook_secret:
+                raise HTTPException(401, "bad webhook secret")
+        body = await request.json()
+        query = body.get("callback_query") or {}
+        data = query.get("data", "")
+        action, _, approval_id = data.partition(":")
+        if action not in ("approve", "deny") or not approval_id:
+            return {"ok": True}
+        by = str((query.get("from") or {}).get("username", "telegram"))
+        approval = gateway.approvals.resolve(
+            approval_id, action == "approve", by)
+        if approval is None:
+            return {"ok": True}
+        return {"ok": True, "approval_id": approval_id,
+                "status": approval.status}
 
     return app

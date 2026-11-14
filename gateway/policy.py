@@ -44,6 +44,8 @@ class Policy:
     deny_when_tainted: list = field(default_factory=list)
     budgets: dict = field(default_factory=dict)
     costs: dict = field(default_factory=dict)  # tool -> dollars per call
+    egress_allowlist: list = field(default_factory=list)
+    taint_sources: list = field(default_factory=list)
     kill_switch: bool = False
 
     @classmethod
@@ -56,6 +58,8 @@ class Policy:
             deny_when_tainted=data.get("deny_when_tainted", []),
             budgets=data.get("budgets", {}),
             costs=data.get("costs", {}),
+            egress_allowlist=data.get("egress_allowlist", []),
+            taint_sources=data.get("taint_sources", []),
             kill_switch=bool(data.get("kill_switch", False)),
         )
 

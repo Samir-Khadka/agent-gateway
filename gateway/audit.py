@@ -33,15 +33,28 @@ class AuditEntry:
     hash: str = ""
 
     def canonical(self) -> str:
-        """The entry without its hash, in a fixed form — what the
-        hash is computed over."""
+        """The entry as a fixed-form string — what the hash is
+        computed over. Note: verify() hashes the stored dict, not
+        this, so an entry written by an older version (without the
+        cost/rows fields) still verifies."""
         data = asdict(self)
         data.pop("hash")
         return json.dumps(data, sort_keys=True, separators=(",", ":"))
 
 
+def _hash_dict(data: dict) -> str:
+    """The hash of a stored entry dict (its own fields, minus the
+    hash itself). Hashing the stored dict — not a dataclass rebuilt
+    from it — is what keeps old entries verifiable after the schema
+    grows a field."""
+    body = {k: v for k, v in data.items() if k != "hash"}
+    return hashlib.sha256(
+        json.dumps(body, sort_keys=True,
+                   separators=(",", ":")).encode()).hexdigest()
+
+
 def _hash(entry: AuditEntry) -> str:
-    return hashlib.sha256(entry.canonical().encode()).hexdigest()
+    return _hash_dict(asdict(entry))
 
 
 class AuditLog:
@@ -95,13 +108,12 @@ class AuditLog:
         """Recompute the chain. Returns (ok, message); on failure the
         message names the first bad entry."""
         prev = "0" * 64
-        for i, raw in enumerate(self.read(), start=1):
-            entry = AuditEntry(**{k: v for k, v in raw.items()
-                                  if k in AuditEntry.__dataclass_fields__})
-            if entry.prev_hash != prev:
+        entries = self.read()
+        for i, raw in enumerate(entries, start=1):
+            if raw.get("prev_hash") != prev:
                 return False, (f"entry {i}: prev_hash does not match "
                                f"entry {i - 1}")
-            if _hash(entry) != entry.hash:
+            if _hash_dict(raw) != raw.get("hash"):
                 return False, f"entry {i}: hash does not match its content"
-            prev = entry.hash
-        return True, f"chain intact ({len(self.read())} entries)"
+            prev = raw["hash"]
+        return True, f"chain intact ({len(entries)} entries)"

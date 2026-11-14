@@ -116,13 +116,39 @@ Admin endpoints (need `X-Admin-Key`): `GET /admin/audit`,
 - Spend and rows are recorded in the audit log, so budgets survive
   a gateway restart.
 
+## v0.3 — taint tracking, egress, Telegram approvals (Phase 3)
+
+- **Taint tracking.** A session starts clean. Once it receives
+  content from an untrusted source — a `web.fetch`, an `email.read`,
+  or any tool the policy lists under `taint_sources` — the session
+  is tainted, and the policy's `deny_when_tainted` rules apply to
+  every later call. The demo proves it: a fetched page tells the
+  agent to email the customer list out, and the tainted session's
+  external email is blocked while its internal email still works.
+  Taint is per-session, persisted, and cleared only by a human
+  (`POST /admin/sessions/{id}/clear`).
+- **Egress allowlist.** `egress_allowlist` in the policy lists the
+  domains an agent may reach. A `web.fetch` or `email.send` to
+  anywhere else is denied. A plain entry covers its subdomains;
+  `*.company.com` covers subdomains only.
+- **Telegram approvals.** When a call is held, the gateway can
+  message a human on Telegram with the agent, tool, arguments, and
+  reason, plus Approve / Deny buttons. Tapping one resolves the
+  approval; the agent re-sends the call with the `approval_id` and
+  it runs or is refused. Setup needs a bot token from @BotFather
+  (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, optional
+  `TELEGRAM_WEBHOOK_SECRET`). Without a token, approvals still work
+  through the admin API (`POST /admin/approvals/{id}/approve`).
+- **Audit log fix.** Adding `cost`/`rows` in v0.2 broke
+  verification of v0.1 entries (the hash was recomputed over a
+  dataclass with defaults). The hash is now computed over the
+  stored dict, so old entries still verify — with a regression test
+  proving it.
+
 ## Roadmap
 
-- **v0.3 (Phase 3)** — taint tracking (a session that touched
-  untrusted content gets tighter rules), egress allowlist, Telegram
-  and Slack approvals.
-- **v0.4 (Phase 4)** — hash-chained log replay, timeline dashboard,
-  incident reconstruction.
+- **v0.4 (Phase 4)** — log replay, timeline dashboard, incident
+  reconstruction.
 - **v0.5 (Phase 5–6)** — fail-closed load tests, published latency
   numbers, open-source launch with the attack benchmark.
 

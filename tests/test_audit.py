@@ -45,3 +45,28 @@ def test_deleting_an_entry_breaks_the_chain(tmp_path):
                     encoding="utf-8")
     ok, message = AuditLog(path).verify()
     assert not ok
+
+
+def test_entries_written_before_cost_rows_still_verify(tmp_path):
+    """A v0.1 entry has no cost/rows fields. Adding those fields in
+    v0.2 must not break verification of the old entries — the hash
+    is computed over the fields the entry actually has."""
+    import hashlib
+    path = tmp_path / "audit.jsonl"
+    entry = {
+        "seq": 1,
+        "ts": "2026-11-14T00:00:00+00:00",
+        "agent": "support-bot",
+        "tool": "crm.read_customer",
+        "args": {},
+        "decision": "allow",
+        "reason": "ok",
+        "result": "",
+        "tainted": False,
+        "prev_hash": "0" * 64,
+    }
+    body = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+    entry["hash"] = hashlib.sha256(body.encode()).hexdigest()
+    path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    ok, message = AuditLog(path).verify()
+    assert ok, message

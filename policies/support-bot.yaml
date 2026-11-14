@@ -12,12 +12,15 @@ allow:
     where: { to_domain: ["company.com"] }
   - tool: refund.create
     when: { amount_lte: 100 }
+  - tool: web.fetch
 require_approval:
   - tool: refund.create
     when: { amount_gt: 100 }
 deny_when_tainted:
   - tool: email.send
     where: { to_domain_not: ["company.com"] }
+egress_allowlist: ["company.com", "*.company.com"]
+taint_sources: ["web.fetch"]
 budgets:
   max_calls: 100
   max_spend: 5.00
@@ -27,3 +30,4 @@ costs:
   crm.read_customer: 0.01
   email.send: 0.02
   refund.create: 0.05
+  web.fetch: 0.01
