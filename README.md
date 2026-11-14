@@ -145,10 +145,29 @@ Admin endpoints (need `X-Admin-Key`): `GET /admin/audit`,
   stored dict, so old entries still verify — with a regression test
   proving it.
 
+## v0.4 — log replay, timeline dashboard, incident reconstruction (Phase 4)
+
+- **Log replay.** `python -m gateway.replay data/audit.jsonl
+  [--agent X] [--session Y] [--decision deny]` rebuilds an incident
+  from the hash-chained log: which call tainted the session, which
+  calls were blocked after that, what it spent and read. The demo's
+  session B replays as three lines: tainted by the fetch, the
+  exfiltration blocked, the internal email still allowed.
+- **Timeline dashboard.** `GET /admin/dashboard` is a single
+  server-rendered page: a summary bar (allowed / denied / held,
+  tainted sessions, spend, rows), filters by agent and session, and
+  the entries as a timeline with decision badges and taint markers.
+  `GET /admin/replay?session=B` returns the same reconstruction
+  as JSON, for the dashboard or any other tool.
+- **Sessions in the log.** Every audit entry now records its
+  `session_id`, so replay can filter to one session — the old
+  entries (without it) still verify, because the hash is computed
+  over the fields each entry actually has.
+
 ## Roadmap
 
-- **v0.4 (Phase 4)** — log replay, timeline dashboard, incident
-  reconstruction.
+- **v0.5 (Phases 5–6)** — hardening, latency numbers, open-source
+  launch, and the 50-scenario attack benchmark.
 - **v0.5 (Phase 5–6)** — fail-closed load tests, published latency
   numbers, open-source launch with the attack benchmark.
 

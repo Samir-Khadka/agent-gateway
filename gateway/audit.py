@@ -27,6 +27,7 @@ class AuditEntry:
     reason: str
     result: str = ""
     tainted: bool = False
+    session_id: str = "default"
     cost: float = 0.0  # what this call cost (dollars), for spend budgets
     rows: int = 0  # rows read by this call, for row budgets
     prev_hash: str = ""
@@ -83,14 +84,14 @@ class AuditLog:
 
     def append(self, agent: str, tool: str, args: dict, decision: str,
                reason: str, result: str = "",
-               tainted: bool = False, cost: float = 0.0,
-               rows: int = 0) -> AuditEntry:
+               tainted: bool = False, session_id: str = "default",
+               cost: float = 0.0, rows: int = 0) -> AuditEntry:
         entry = AuditEntry(
             seq=self._seq + 1,
             ts=datetime.now(timezone.utc).isoformat(),
             agent=agent, tool=tool, args=args, decision=decision,
             reason=reason, result=result, tainted=tainted,
-            cost=cost, rows=rows,
+            session_id=session_id, cost=cost, rows=rows,
             prev_hash=self._last_hash())
         entry.hash = _hash(entry)
         with self.path.open("a", encoding="utf-8") as f:

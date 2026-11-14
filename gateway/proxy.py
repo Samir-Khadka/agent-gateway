@@ -208,7 +208,7 @@ class Gateway:
 
 
 def create_app(gateway: Gateway) -> FastAPI:
-    app = FastAPI(title="Agent Gateway", version="0.3.0")
+    app = FastAPI(title="Agent Gateway", version="0.4.0")
 
     def _agent(request: Request) -> str:
         key = request.headers.get("x-agent-key")
@@ -273,7 +273,8 @@ def create_app(gateway: Gateway) -> FastAPI:
             if approval.status == "denied":
                 gateway.audit.append(agent, tool, args, "deny",
                                      "approval was denied",
-                                     tainted=tainted)
+                                     tainted=tainted,
+                                     session_id=session_id)
                 return _rpc_error(
                     -32000, "blocked by Agent Gateway: approval was denied")
             if approval.status == "pending":
@@ -291,14 +292,16 @@ def create_app(gateway: Gateway) -> FastAPI:
                                       session_id=session_id)
         if decision.outcome == "deny":
             gateway.audit.append(agent, tool, args, "deny",
-                                 decision.reason, tainted=tainted)
+                                 decision.reason, tainted=tainted,
+                                 session_id=session_id)
             return _rpc_error(-32000,
                               f"blocked by Agent Gateway: {decision.reason}")
         if decision.outcome == "require_approval":
             approval = gateway.approvals.request(
                 agent, session_id, tool, args, decision.reason)
             gateway.audit.append(agent, tool, args, "require_approval",
-                                 decision.reason, tainted=tainted)
+                                 decision.reason, tainted=tainted,
+                                 session_id=session_id)
             gateway.notify_approval(approval)
             return _rpc_result(
                 {"held_for_approval": True,
@@ -314,7 +317,9 @@ def create_app(gateway: Gateway) -> FastAPI:
         result_text = json.dumps(upstream.get("result", {}))[:500]
         gateway.audit.append(agent, tool, args, "allow",
                              decision.reason, result=result_text,
-                             tainted=tainted, cost=cost, rows=rows)
+                             tainted=tainted,
+                             session_id=session_id,
+                             cost=cost, rows=rows)
         # A result from an untrusted source taints the session, so
         # the next call faces the tighter rules.
         if result_is_untrusted(tool, upstream,
@@ -349,6 +354,35 @@ def create_app(gateway: Gateway) -> FastAPI:
     def policies(request: Request):
         _admin(request)
         return {"agents": sorted(gateway.policies)}
+
+    @app.get("/admin/dashboard")
+    def dashboard(request: Request, agent: str | None = None,
+                  session: str | None = None,
+                  decision: str | None = None):
+        _admin(request)
+        from .dashboard import render_dashboard
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(render_dashboard(
+            gateway.audit.read(), agent=agent, session_id=session,
+            decision=decision))
+
+    @app.get("/admin/replay")
+    def replay_incident(request: Request, agent: str | None = None,
+                        session: str | None = None):
+        """Reconstruct an incident from the log, as JSON."""
+        _admin(request)
+        from .replay import replay
+        incident = replay(gateway.audit.path, agent=agent,
+                          session_id=session)
+        return {
+            "entries": incident.entries,
+            "decisions": incident.decisions,
+            "total_spend": incident.total_spend,
+            "total_rows": incident.total_rows,
+            "taint_event": incident.taint_event,
+            "blocked_after_taint": incident.blocked_after_taint,
+            "held": incident.held,
+        }
 
     @app.get("/admin/sessions/{session_id}/taint")
     def session_taint(session_id: str, request: Request):
