@@ -39,6 +39,34 @@ from .taint import TaintTracker, result_is_untrusted
 
 UPSTREAM_TIMEOUT = 30.0
 
+# Hardening limits (Phase 5): a single MCP request must stay
+# small, and an agent may not flood the gateway. These are the
+# gateway's own abuse guards — the policy's per-tool rate limits
+# and budgets are a separate, finer control.
+MAX_BODY_BYTES = 1_000_000  # 1 MB per MCP request
+MAX_ARGS_BYTES = 100_000  # 100 KB of arguments
+MAX_REQUESTS_PER_MINUTE = 60  # per agent key, gateway-wide
+
+
+class RateLimiter:
+    """A sliding-window rate limit, per key, in memory."""
+
+    def __init__(self, max_requests: int, window_seconds: int = 60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._hits: dict[str, deque] = defaultdict(deque)
+
+    def allow(self, key: str, now: float | None = None) -> bool:
+        now = now if now is not None else time.monotonic()
+        hits = self._hits[key]
+        cutoff = now - self.window_seconds
+        while hits and hits[0] <= cutoff:
+            hits.popleft()
+        if len(hits) >= self.max_requests:
+            return False
+        hits.append(now)
+        return True
+
 
 class Gateway:
     """One gateway instance: policies, keys, audit log, budgets."""
@@ -69,6 +97,8 @@ class Gateway:
         self.calls_made: dict[str, int] = {}
         self.spend: dict[str, float] = {}
         self.rows_read: dict[str, int] = {}
+        # gateway-wide request rate limit, per agent key
+        self.request_limiter = RateLimiter(MAX_REQUESTS_PER_MINUTE)
         # (agent, tool) -> timestamps of recent calls, for rate limits
         self.call_times: dict[tuple[str, str], deque] = defaultdict(deque)
         for entry in self.audit.read():
@@ -194,21 +224,27 @@ class Gateway:
         return decision
 
     async def forward(self, method: str, params: dict) -> dict:
-        """Forward a JSON-RPC request to the upstream MCP server."""
+        """Forward a JSON-RPC request to the upstream MCP server.
+        Raises RuntimeError with a generic message on any upstream
+        failure — the caller never sees the upstream's internals
+        (connection details, stack traces, or error text)."""
         payload = {"jsonrpc": "2.0", "id": 1, "method": method,
                    "params": params}
         # trust_env=False: the upstream is an internal tool server, so
         # connect directly instead of via any egress proxy in the
         # environment (a sandbox proxy would mangle a localhost URL).
-        async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT,
-                                     trust_env=False) as client:
-            resp = await client.post(self.upstream_url, json=payload)
-            resp.raise_for_status()
-            return resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT,
+                                         trust_env=False) as client:
+                resp = await client.post(self.upstream_url, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise RuntimeError("upstream unavailable") from exc
 
 
 def create_app(gateway: Gateway) -> FastAPI:
-    app = FastAPI(title="Agent Gateway", version="0.4.0")
+    app = FastAPI(title="Agent Gateway", version="0.5.0")
 
     def _agent(request: Request) -> str:
         key = request.headers.get("x-agent-key")
@@ -232,7 +268,36 @@ def create_app(gateway: Gateway) -> FastAPI:
         policy = gateway.policy_for(agent)
         if policy is None:
             raise HTTPException(403, f"no policy for agent {agent}")
-        body = await request.json()
+        # Gateway-wide abuse guard: an agent may not flood the
+        # gateway, whatever the policy's per-tool limits say.
+        key = request.headers.get("x-agent-key", "")
+        if not gateway.request_limiter.allow(key):
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32000,
+                           "message": "rate limit exceeded: "
+                                      "too many requests"}},
+                status_code=429)
+        raw = await request.body()
+        if len(raw) > MAX_BODY_BYTES:
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32600,
+                           "message": "request too large"}},
+                status_code=413)
+        try:
+            body = json.loads(raw) if raw else {}
+        except ValueError:
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32700, "message": "parse error"}},
+                status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": None,
+                 "error": {"code": -32600,
+                           "message": "request must be a JSON object"}},
+                status_code=400)
         method = body.get("method", "")
         params = body.get("params", {}) or {}
         req_id = body.get("id")
@@ -246,8 +311,13 @@ def create_app(gateway: Gateway) -> FastAPI:
             return JSONResponse(
                 {"jsonrpc": "2.0", "id": req_id, "result": result})
 
+        if not isinstance(method, str) or not isinstance(params, dict):
+            return _rpc_error(-32600, "invalid request")
         if method == "tools/list":
-            upstream = await gateway.forward("tools/list", {})
+            try:
+                upstream = await gateway.forward("tools/list", {})
+            except RuntimeError:
+                return _rpc_error(-32000, "upstream unavailable")
             tools = upstream.get("result", {}).get("tools", [])
             allowed = {r["tool"] for r in policy.allow}
             visible = [t for t in tools if t.get("name") in allowed]
@@ -257,6 +327,14 @@ def create_app(gateway: Gateway) -> FastAPI:
 
         tool = params.get("name", "")
         args = params.get("arguments", {}) or {}
+        if not isinstance(tool, str) or not tool or \
+                not isinstance(args, dict):
+            return _rpc_error(-32602, "invalid params")
+        if len(json.dumps(args)) > MAX_ARGS_BYTES:
+            return _rpc_error(-32602, "arguments too large")
+        approval_id = params.get("approval_id")
+        if approval_id is not None and not isinstance(approval_id, str):
+            return _rpc_error(-32602, "invalid approval id")
         session_id = request.headers.get("x-session-id", "default")
         tainted = gateway.taint.is_tainted(session_id)
 
@@ -308,7 +386,10 @@ def create_app(gateway: Gateway) -> FastAPI:
                  "reason": decision.reason,
                  "approval_id": approval.id,
                  "tool": tool, "arguments": args})
-        upstream = await gateway.forward("tools/call", params)
+        try:
+            upstream = await gateway.forward("tools/call", params)
+        except RuntimeError:
+            return _rpc_error(-32000, "upstream unavailable")
         gateway.record_call(agent, tool)
         cost = policy.cost_of(tool)
         rows = policy.rows_of(tool, args)

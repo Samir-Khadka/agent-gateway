@@ -11,7 +11,7 @@ allow:
   - tool: email.send
     where: { to_domain: ["company.com"] }
   - tool: refund.create
-    when: { amount_lte: 100 }
+    when: { amount_lte: 100, amount_gt: 0 }
   - tool: web.fetch
 require_approval:
   - tool: refund.create

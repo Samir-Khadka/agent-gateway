@@ -164,10 +164,48 @@ Admin endpoints (need `X-Admin-Key`): `GET /admin/audit`,
   entries (without it) still verify, because the hash is computed
   over the fields each entry actually has.
 
+## v0.5 — hardening, attack benchmark, latency, launch (Phases 5–6)
+
+- **Attack benchmark.** `python -m gateway.attack_benchmark`
+  runs **55 scenarios** from the threat model against a live
+  gateway, each asserting the call is blocked, held, or allowed as
+  it should be: injection (10), exfiltration (8), privilege
+  escalation (6), budgets (6), approval bypass (6), kill switch
+  (4), egress (6), audit tampering (4), hardening (5). **55/55
+  pass.** The benchmark runs in CI, so a change that weakens a
+  control is a regression, not a feature.
+- **Hardening.** The gateway now rejects oversized requests (1 MB
+  body, 100 KB of arguments), malformed JSON, non-object requests,
+  and calls with a non-dict `arguments`; a gateway-wide rate limit
+  (60 requests/minute per agent key, 429 on excess) sits above the
+  policy's per-tool limits; and an upstream failure returns a
+  generic "upstream unavailable" instead of leaking the upstream's
+  internals. Two real gaps the benchmark found are fixed: a
+  negative refund (a charge, not a refund) is now denied by the
+  policy, and the policy's `to_domain` now covers subdomains —
+  the same rule as the egress allowlist, so the two controls cannot
+  disagree about what "company.com" means. Denials now say *why*
+  (max_rows, to_domain, amount, taint, budget, egress) instead of
+  only "not in this agent's capabilities".
+- **Latency.** The policy decision itself — the gateway's own
+  added cost — is **p50 0.003 ms, p95 0.005 ms** (n=200), well
+  under the 10 ms budget. End to end, a forwarded call in the test
+  harness averages 44 ms against 6 ms direct to the upstream; the
+  difference is the extra HTTP hop to the tool server (the gateway
+  is a proxy, and it talks to the tool server over real HTTP),
+  plus test-client overhead — not the policy check. Run it:
+  `python -m gateway.latency`.
+- **Open-source launch.** MIT license (`LICENSE`), a security
+  policy (`SECURITY.md` — report privately to
+  samirshirjan890@gmail.com), and contribution rules
+  (`CONTRIBUTING.md` — fail closed, denials must say why, the
+  audit log is append-only, no new dependencies without a reason).
+
 ## Roadmap
 
-- **v0.5 (Phases 5–6)** — hardening, latency numbers, open-source
-  launch, and the 50-scenario attack benchmark.
+- **v0.6** — the first real deployment: a hosted demo, a
+  policy-editor UI, and the benchmark run against a real agent
+  (not the demo server).
 - **v0.5 (Phase 5–6)** — fail-closed load tests, published latency
   numbers, open-source launch with the attack benchmark.
 

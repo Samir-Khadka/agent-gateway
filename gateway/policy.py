@@ -85,6 +85,16 @@ def _domain_of(to: str) -> str:
     return to.rsplit("@", 1)[-1].strip().lower() if "@" in to else ""
 
 
+def _domain_matches(domain: str, entry: str) -> bool:
+    """Whether a domain is covered by one listed domain. A plain
+    entry covers the domain and its subdomains (company.com covers
+    docs.company.com) — the same rule as the egress allowlist, so
+    the two controls cannot disagree about what 'company.com'
+    means. evilcompany.com is NOT a subdomain of company.com."""
+    entry = entry.lower()
+    return domain == entry or domain.endswith("." + entry)
+
+
 def _matches(rule: dict, tool: str, args: dict) -> bool:
     """Whether this rule applies to the call: the tool name matches
     and every condition in `where` / `when` / `limits` holds."""
@@ -94,10 +104,14 @@ def _matches(rule: dict, tool: str, args: dict) -> bool:
     limits = rule.get("limits") or {}
     for key, value in {**where, **limits}.items():
         if key == "to_domain":
-            if _domain_of(str(args.get("to", ""))) not in value:
+            domain = _domain_of(str(args.get("to", "")))
+            if not any(_domain_matches(domain, entry)
+                       for entry in value):
                 return False
         elif key == "to_domain_not":
-            if _domain_of(str(args.get("to", ""))) in value:
+            domain = _domain_of(str(args.get("to", "")))
+            if any(_domain_matches(domain, entry)
+                   for entry in value):
                 return False
         elif key == "max_rows":
             n = args.get("limit", args.get("max_rows"))
@@ -113,6 +127,39 @@ def _matches(rule: dict, tool: str, args: dict) -> bool:
             # an unknown condition never matches — fail closed
             return False
     return True
+
+
+def _failed_condition(rule: dict, tool: str, args: dict) -> str | None:
+    """The first condition of a rule that does not hold, as a
+    readable reason — so a denial says *why* (max_rows, domain,
+    amount) instead of only 'not in this agent's capabilities'."""
+    where = rule.get("where") or rule.get("when") or {}
+    limits = rule.get("limits") or {}
+    for key, value in {**where, **limits}.items():
+        if key == "to_domain":
+            domain = _domain_of(str(args.get("to", "")))
+            if not any(_domain_matches(domain, entry)
+                       for entry in value):
+                return (f"to_domain: {domain} is not in "
+                        f"{', '.join(value)}")
+        elif key == "to_domain_not":
+            domain = _domain_of(str(args.get("to", "")))
+            if any(_domain_matches(domain, entry)
+                   for entry in value):
+                return f"to_domain_not: {domain} is in {value}"
+        elif key == "max_rows":
+            n = args.get("limit", args.get("max_rows"))
+            if n is not None and int(n) > int(value):
+                return f"max_rows: {n} exceeds {value}"
+        elif key == "amount_gt":
+            if float(args.get("amount", 0)) <= float(value):
+                return (f"amount_gt: {args.get('amount')} is not "
+                        f"greater than {value}")
+        elif key == "amount_lte":
+            if float(args.get("amount", 0)) > float(value):
+                return (f"amount_lte: {args.get('amount')} exceeds "
+                        f"{value}")
+    return None
 
 
 def evaluate(policy: Policy, tool: str, args: dict,
@@ -136,4 +183,13 @@ def evaluate(policy: Policy, tool: str, args: dict,
     for rule in policy.allow:
         if _matches(rule, tool, args):
             return Decision("allow", f"{tool} is allowed", rule)
+    # A rule exists for this tool but a condition failed — say which
+    # one, so the denial is diagnosable instead of generic.
+    for rule in policy.allow:
+        if rule.get("tool") == tool:
+            reason = _failed_condition(rule, tool, args)
+            if reason:
+                return Decision(
+                    "deny",
+                    f"{tool} is not allowed: {reason}")
     return Decision("deny", f"{tool} is not in this agent's capabilities")

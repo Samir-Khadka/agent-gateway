@@ -10,7 +10,8 @@ POLICY = {
         {"tool": "crm.read_customer", "limits": {"max_rows": 20}},
         {"tool": "email.send",
          "where": {"to_domain": ["company.com"]}},
-        {"tool": "refund.create", "when": {"amount_lte": 100}},
+        {"tool": "refund.create",
+         "when": {"amount_lte": 100, "amount_gt": 0}},
     ],
     "require_approval": [
         {"tool": "refund.create", "when": {"amount_gt": 100}},
@@ -26,7 +27,7 @@ def test_all_support_bot_cases_pass():
     policy = Policy.from_dict(POLICY)
     results = run_cases(
         policy, load_cases("tests/policies/support-bot.cases.yaml"))
-    assert len(results) == 9
+    assert len(results) == 10
     assert all(r.passed for r in results)
 
 
@@ -42,7 +43,7 @@ def test_a_wrong_expectation_fails():
 def test_cli_exits_0_when_all_pass(capsys):
     assert main(["policies/support-bot.yaml",
                  "tests/policies/support-bot.cases.yaml"]) == 0
-    assert "9/9 cases passed" in capsys.readouterr().out
+    assert "10/10 cases passed" in capsys.readouterr().out
 
 
 def test_cli_exits_1_when_a_case_fails(tmp_path, capsys):

@@ -25,6 +25,10 @@ cases:
     tool: refund.create
     args: { customer_id: cust_1, amount: 150 }
     expected: require_approval
+  - name: negative refund is denied (a charge, not a refund)
+    tool: refund.create
+    args: { customer_id: cust_1, amount: -50 }
+    expected: deny
   - name: unknown tool is denied
     tool: db.delete_all
     args: {}
