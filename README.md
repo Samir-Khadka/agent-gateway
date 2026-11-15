@@ -227,11 +227,28 @@ Admin endpoints (need `X-Admin-Key`): `GET /admin/audit`,
   while the legitimate work (an internal email, a small refund)
   still completes. The audit log verifies intact at the end.
 
+## v0.7 — an LLM agent, and the launch (Phase 7)
+
+- **An LLM agent.** `examples/llm_agent.py` is a ReAct loop: the
+  model gets the ticket and the tools the gateway allows it to
+  see, picks a tool call, the gateway checks it, and the result
+  (or the block) goes back to the model. It works with any
+  OpenAI-compatible API (`LLM_API_KEY`, `LLM_BASE_URL`,
+  `LLM_MODEL`) — and with `--simulate`, a deterministic stand-in
+  plays the model, so the harness runs without a key and CI can
+  test it. In simulate mode the transcript is the proof: the model
+  follows the injected instruction, the gateway blocks the
+  exfiltration, and the legitimate work still completes.
+- **Launch.** `LAUNCH.md` is the announcement: what it does, the
+  numbers (55/55, p50 0.003 ms), and what it is not. The hosted
+  demo still waits for the Render reset on 1 Dec — that is the one
+  piece of the launch that cannot be done today.
+
 ## Roadmap
 
-- **v0.7** — the benchmark against a real LLM agent (not the
-  scripted one), a hosted demo once Render resets, and the
-  open-source launch announcement.
+- **v0.8 (1 Dec)** — the hosted demo goes live once Render
+  resets, and the launch announcement is published (LinkedIn
+  draft below, awaiting Samir's approval of the exact text).
 - **v0.5 (Phase 5–6)** — fail-closed load tests, published latency
   numbers, open-source launch with the attack benchmark.
 

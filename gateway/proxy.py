@@ -276,7 +276,7 @@ class Gateway:
 
 
 def create_app(gateway: Gateway) -> FastAPI:
-    app = FastAPI(title="Agent Gateway", version="0.6.0")
+    app = FastAPI(title="Agent Gateway", version="0.7.0")
 
     def _agent(request: Request) -> str:
         key = request.headers.get("x-agent-key")
