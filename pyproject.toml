@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-gateway"
-version = "0.7.0"
+version = "0.8.0"
 description = "A firewall for what AI agents do, not what they say"
 requires-python = ">=3.11"
 dependencies = [

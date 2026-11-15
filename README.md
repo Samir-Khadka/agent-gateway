@@ -244,11 +244,33 @@ Admin endpoints (need `X-Admin-Key`): `GET /admin/audit`,
   demo still waits for the Render reset on 1 Dec — that is the one
   piece of the launch that cannot be done today.
 
+## v0.8 — Slack approvals, a second agent, a safer editor
+
+- **Slack approvals.** Phase 3 said "Telegram and Slack" — Slack
+  is the half that was missing. `SLACK_WEBHOOK_URL` posts the
+  approval request as a Block Kit message with Approve / Deny
+  buttons; `POST /slack/interactive` receives the click, verifies
+  the request signature when `SLACK_SIGNING_SECRET` is set, and
+  resolves the approval. Telegram and Slack can both be configured;
+  the gateway notifies on every channel that is set. (Also fixed
+  along the way: the repo had no `requirements.txt` even though
+  `render.yaml` and the `Dockerfile` referenced it — it exists
+  now, including `python-multipart`, which Slack's form-encoded
+  payloads need.)
+- **A second agent.** `policies/analyst-bot.yaml` is a read-only
+  analyst: it may read customers and fetch pages, but never email
+  or refund. The demo's new Session D shows the same call allowed
+  for the support bot and denied for the analyst — the gateway
+  enforces a different policy per agent.
+- **A safer editor.** Saving a policy now runs that policy's test
+  cases first, and rejects the save if any fail — so an edit cannot
+  silently break the behaviour the tests pin down. The old file is
+  left untouched.
+
 ## Roadmap
 
-- **v0.8 (1 Dec)** — the hosted demo goes live once Render
-  resets, and the launch announcement is published (LinkedIn
-  draft below, awaiting Samir's approval of the exact text).
+- **v0.9 (1 Dec)** — the hosted demo goes live once Render resets,
+  and the launch announcement is published.
 - **v0.5 (Phase 5–6)** — fail-closed load tests, published latency
   numbers, open-source launch with the attack benchmark.
 

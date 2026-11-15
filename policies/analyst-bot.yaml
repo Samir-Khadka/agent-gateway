@@ -1,0 +1,22 @@
+# A read-only analyst: it may look at customers and fetch pages,
+# but it may never send email, refund, or change anything. The point
+# is that the gateway enforces a different policy per agent — the
+# same call that the support bot may make, the analyst may not.
+agent: analyst-bot
+risk_tier: low
+allow:
+  - tool: crm.read_customer
+    limits: { max_rows: 50 }
+  - tool: web.fetch
+deny_when_tainted:
+  - tool: web.fetch
+egress_allowlist: ["company.com", "*.company.com"]
+taint_sources: ["web.fetch"]
+budgets:
+  max_calls: 200
+  max_spend: 2.00
+  max_rows_read: 5000
+  rate_limits: { web.fetch: 20 }
+costs:
+  crm.read_customer: 0.01
+  web.fetch: 0.01

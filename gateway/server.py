@@ -19,7 +19,9 @@ from pathlib import Path
 from .proxy import Gateway, create_app
 
 _keys = json.loads(os.environ.get(
-    "GATEWAY_KEYS", '{"demo-key-support-bot": "support-bot"}'))
+    "GATEWAY_KEYS",
+    '{"demo-key-support-bot": "support-bot", '
+    '"demo-key-analyst-bot": "analyst-bot"}'))
 
 gateway = Gateway(
     policy_dir=os.environ.get("POLICY_DIR", "policies"),

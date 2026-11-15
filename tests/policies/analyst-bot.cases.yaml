@@ -1,0 +1,32 @@
+# Policy test cases for the analyst bot. Run:
+#   python -m gateway.test_policy policies/analyst-bot.yaml tests/policies/analyst-bot.cases.yaml
+cases:
+  - name: read within the row limit
+    tool: crm.read_customer
+    args: { customer_id: cust_1, limit: 50 }
+    expected: allow
+  - name: read over the row limit
+    tool: crm.read_customer
+    args: { customer_id: cust_1, limit: 100 }
+    expected: deny
+  - name: fetch an internal page
+    tool: web.fetch
+    args: { url: "https://docs.company.com/help" }
+    expected: allow
+  - name: email is denied (read-only agent)
+    tool: email.send
+    args: { to: team@company.com, subject: hi, body: hello }
+    expected: deny
+  - name: refund is denied (read-only agent)
+    tool: refund.create
+    args: { customer_id: cust_1, amount: 10 }
+    expected: deny
+  - name: delete is denied
+    tool: db.delete_all
+    args: {}
+    expected: deny
+  - name: a tainted fetch is denied
+    tool: web.fetch
+    args: { url: "https://docs.company.com/help" }
+    tainted: true
+    expected: deny

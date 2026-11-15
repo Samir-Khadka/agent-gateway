@@ -77,7 +77,9 @@ class Gateway:
                  admin_key: str | None = None,
                  telegram_token: str | None = None,
                  telegram_chat_id: str | None = None,
-                 telegram_webhook_secret: str | None = None):
+                 telegram_webhook_secret: str | None = None,
+                 slack_webhook_url: str | None = None,
+                 slack_signing_secret: str | None = None):
         self.policy_dir = Path(policy_dir)
         self.keys = keys  # api key -> agent id
         self.upstream_url = upstream_url
@@ -91,6 +93,10 @@ class Gateway:
             os.environ.get("TELEGRAM_CHAT_ID")
         self.telegram_webhook_secret = telegram_webhook_secret or \
             os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+        self.slack_webhook_url = slack_webhook_url or \
+            os.environ.get("SLACK_WEBHOOK_URL")
+        self.slack_signing_secret = slack_signing_secret or \
+            os.environ.get("SLACK_SIGNING_SECRET")
         self.taint = TaintTracker(self.data_dir / "tainted.json")
         self.approvals = ApprovalStore(self.data_dir / "approvals.json")
         self.policies = self._load_policies()
@@ -117,10 +123,14 @@ class Gateway:
             policies[policy.agent] = policy
         return policies
 
-    def save_policy(self, agent: str, data: dict) -> Policy:
+    def save_policy(self, agent: str, data: dict,
+                    cases: list[dict] | None = None) -> Policy:
         """Validate and save a policy, then reload it live. Raises
         ValueError with a readable reason when the policy is
-        invalid — the old file is left untouched."""
+        invalid — the old file is left untouched. When test cases
+        are given (the policy's cases file), the new policy must
+        pass all of them first — so an edit cannot silently break
+        the behaviour the tests pin down."""
         import yaml
         policy = Policy.from_dict(data)
         if policy.agent != agent:
@@ -141,6 +151,16 @@ class Gateway:
                     if key not in ("tool", "where", "when", "limits"):
                         raise ValueError(
                             f"{section}: unknown key {key!r} in a rule")
+        if cases:
+            from .test_policy import run_cases
+            failed = [r for r in run_cases(policy, cases)
+                      if not r.passed]
+            if failed:
+                names = ", ".join(
+                    f"{r.name} (expected {r.expected}, got {r.actual})"
+                    for r in failed)
+                raise ValueError(
+                    f"policy fails its test cases: {names}")
         path = self.policy_dir / f"{agent}.yaml"
         text = yaml.safe_dump(policy.to_dict(), sort_keys=False,
                               allow_unicode=True)
@@ -180,18 +200,25 @@ class Gateway:
         self._save_killed()
 
     def notify_approval(self, approval) -> None:
-        """Tell a human a call is waiting. Telegram when it is
-        configured; otherwise the approval simply waits in the admin
-        API. A failed send never blocks the hold itself."""
-        if not (self.telegram_token and self.telegram_chat_id):
-            return
-        try:
-            from .telegram import send_approval_request
-            send_approval_request(self.telegram_token,
-                                  self.telegram_chat_id, approval)
-        except Exception as e:
-            print(f"agent-gateway: telegram notify failed — {e}",
-                  file=__import__("sys").stderr)
+        """Tell a human a call is waiting. Telegram and Slack when
+        they are configured (both, if both are set); otherwise the
+        approval simply waits in the admin API. A failed send never
+        blocks the hold itself."""
+        if self.telegram_token and self.telegram_chat_id:
+            try:
+                from .telegram import send_approval_request
+                send_approval_request(self.telegram_token,
+                                      self.telegram_chat_id, approval)
+            except Exception as e:
+                print(f"agent-gateway: telegram notify failed — {e}",
+                      file=__import__("sys").stderr)
+        if self.slack_webhook_url:
+            try:
+                from .slack import send_approval_request as slack_send
+                slack_send(self.slack_webhook_url, approval)
+            except Exception as e:
+                print(f"agent-gateway: slack notify failed — {e}",
+                      file=__import__("sys").stderr)
 
     def check_budget(self, agent: str, policy: Policy, tool: str = "",
                      args: dict | None = None) -> str | None:
@@ -276,7 +303,7 @@ class Gateway:
 
 
 def create_app(gateway: Gateway) -> FastAPI:
-    app = FastAPI(title="Agent Gateway", version="0.7.0")
+    app = FastAPI(title="Agent Gateway", version="0.8.0")
 
     def _agent(request: Request) -> str:
         key = request.headers.get("x-agent-key")
@@ -491,8 +518,16 @@ def create_app(gateway: Gateway) -> FastAPI:
             raise HTTPException(400, "invalid JSON")
         if not isinstance(data, dict):
             raise HTTPException(400, "policy must be a JSON object")
+        # the policy's test cases, when they exist, must still pass
+        # after the edit — an edit cannot silently break pinned
+        # behaviour
+        cases = None
+        cases_path = Path(f"tests/policies/{agent}.cases.yaml")
+        if cases_path.exists():
+            from .test_policy import load_cases
+            cases = load_cases(cases_path)
         try:
-            policy = gateway.save_policy(agent, data)
+            policy = gateway.save_policy(agent, data, cases=cases)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         return policy.to_dict()
@@ -589,5 +624,36 @@ def create_app(gateway: Gateway) -> FastAPI:
             return {"ok": True}
         return {"ok": True, "approval_id": approval_id,
                 "status": approval.status}
+
+    @app.post("/slack/interactive")
+    async def slack_interactive(request: Request):
+        """Slack sends button clicks here as a form-encoded payload.
+        When a signing secret is configured, the request is verified
+        against it; without one, the payload is accepted (set the
+        secret in production)."""
+        body = await request.body()
+        if gateway.slack_signing_secret:
+            from .slack import verify_slack_signature
+            if not verify_slack_signature(
+                    gateway.slack_signing_secret, body,
+                    request.headers.get("x-slack-request-timestamp", ""),
+                    request.headers.get("x-slack-signature", "")):
+                raise HTTPException(401, "bad Slack signature")
+        form = await request.form()
+        try:
+            payload = json.loads(form.get("payload", "{}"))
+        except ValueError:
+            return {"ok": True}
+        from .slack import parse_interactive_payload
+        action, approval_id, by = parse_interactive_payload(payload)
+        if not action:
+            return {"ok": True}
+        approval = gateway.approvals.resolve(
+            approval_id, action == "approve", by)
+        if approval is None:
+            return {"ok": True}
+        return {"ok": True, "approval_id": approval_id,
+                "status": approval.status,
+                "text": f"Approval {approval_id} {approval.status}."}
 
     return app

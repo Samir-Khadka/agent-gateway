@@ -40,6 +40,7 @@ from gateway.demo_server import create_demo_server
 from gateway.proxy import Gateway, create_app
 
 AGENT_KEY = "demo-key-support-bot"
+ANALYST_KEY = "demo-key-analyst-bot"
 ADMIN_KEY = "demo-admin-secret"
 UPSTREAM = "http://127.0.0.1:8001/mcp"
 
@@ -48,13 +49,15 @@ def _serve(app, port):
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
 
 
-def _call(client, tool, args, session="default", approval_id=None):
+def _call(client, tool, args, session="default", approval_id=None,
+          key=None):
     params = {"name": tool, "arguments": args}
     if approval_id:
         params["approval_id"] = approval_id
     resp = client.post(
         "http://127.0.0.1:8000/mcp",
-        headers={"x-agent-key": AGENT_KEY, "x-session-id": session},
+        headers={"x-agent-key": key or AGENT_KEY,
+                 "x-session-id": session},
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
               "params": params})
     body = resp.json()
@@ -77,7 +80,8 @@ def main() -> None:
     # previous run do not leak into this one
     tmp = tempfile.mkdtemp(prefix="agent-gateway-demo-")
     gateway = Gateway(policy_dir="policies",
-                      keys={AGENT_KEY: "support-bot"},
+                      keys={AGENT_KEY: "support-bot",
+                            ANALYST_KEY: "analyst-bot"},
                       upstream_url=UPSTREAM,
                       audit_path=f"{tmp}/audit.jsonl",
                       data_dir=tmp,
@@ -130,6 +134,16 @@ def main() -> None:
                     {"customer_id": "cust_1", "amount": 150},
                     session="C", approval_id=approval_id)
     print(f"refund.create 150 (re-sent with the approval id)\n  {text}")
+
+    print("== Session D: a second agent, a different policy ==")
+    text, _ = _call(client, "crm.read_customer",
+                    {"customer_id": "cust_1", "limit": 5},
+                    session="D", key=ANALYST_KEY)
+    print(f"analyst-bot reads a customer\n  {text}")
+    text, _ = _call(client, "email.send",
+                    {"to": "team@company.com", "subject": "hi",
+                     "body": "hello"}, session="D", key=ANALYST_KEY)
+    print(f"analyst-bot sends an email (read-only agent)\n  {text}")
 
     ok, message = gateway.audit.verify()
     print(f"\naudit log: {message} (chain {'intact' if ok else 'BROKEN'})")
