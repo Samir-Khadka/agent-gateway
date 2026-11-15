@@ -335,7 +335,7 @@ class Gateway:
 
 
 def create_app(gateway: Gateway) -> FastAPI:
-    app = FastAPI(title="Agent Gateway", version="0.9.0")
+    app = FastAPI(title="Agent Gateway", version="1.0.0")
 
     def _agent(request: Request) -> str:
         key = request.headers.get("x-agent-key")
@@ -352,6 +352,20 @@ def create_app(gateway: Gateway) -> FastAPI:
     @app.get("/health")
     def health():
         return {"status": "ok", "agents": sorted(gateway.policies)}
+
+    @app.get("/metrics")
+    def metrics():
+        from .metrics import compute_stats, render_prometheus
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(
+            render_prometheus(compute_stats(gateway)),
+            media_type="text/plain; version=0.0.4")
+
+    @app.get("/admin/stats")
+    def stats(request: Request):
+        _admin(request)
+        from .metrics import compute_stats
+        return compute_stats(gateway)
 
     @app.get("/demo")
     def demo_page():

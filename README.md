@@ -5,6 +5,24 @@ which tools an agent may call, with what arguments, and under whose
 approval — so a prompt injection that succeeds anyway can only do
 what the agent was already allowed to do.
 
+**Status: 1.0.0** — stable, MIT licensed, CI green on Python 3.11
+and 3.12. **55/55** attack scenarios stopped. Policy decision in
+**p50 0.003 ms**.
+
+## Quickstart
+
+```bash
+git clone https://github.com/Samir-Khadka/agent-gateway
+cd agent-gateway
+pip install -r requirements.txt
+python demo.py          # the injection demo, in one command
+```
+
+Then run the gateway and the demo tool server (see `DEPLOY.md`),
+open the policy editor at `/admin/editor`, the timeline at
+`/admin/dashboard`, the interactive demo at `/demo`
+(`GATEWAY_DEMO_PAGE=1`), and the metrics at `/metrics`.
+
 ## The bet
 
 Some prompt injections will always succeed, so text filters alone
@@ -282,10 +300,19 @@ Admin endpoints (need `X-Admin-Key`): `GET /admin/audit`,
   demo-only agent key — which only grants the demo agent's policy,
   and is labelled as such on the page.
 
+## v1.0 — metrics, changelog, and the release
+
+- **Metrics.** `GET /metrics` (Prometheus text format) and
+  `GET /admin/stats` (JSON): total calls, decisions by outcome,
+  spend, rows read, tainted sessions, pending approvals, killed
+  agents — computed from the audit log, so a restart rebuilds them.
+- **Changelog.** `CHANGELOG.md` covers every version from 0.1.0.
+
 ## Roadmap
 
-- **v1.0 (1 Dec)** — the hosted demo goes live once Render resets,
-  the launch announcement is published, and the version hits 1.0.
+- **1 Dec** — the hosted demo goes live once Render resets, and the
+  launch announcement is published. The gateway itself is done;
+  what remains is deployment and announcement.
 - **v0.5 (Phase 5–6)** — fail-closed load tests, published latency
   numbers, open-source launch with the attack benchmark.
 
