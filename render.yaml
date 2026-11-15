@@ -1,0 +1,29 @@
+# Agent Gateway on Render (free tier).
+# Deploy: connect this repo in the Render dashboard, or
+# `render blueprint launch`. The gateway needs three env vars:
+#   GATEWAY_ADMIN_KEY  — a long random secret (set it in Render)
+#   GATEWAY_KEYS       — agent keys as JSON, e.g.
+#                        {"demo-key-support-bot": "support-bot"}
+#   UPSTREAM_URL       — the MCP tool server to protect
+#                        (default: the bundled demo server)
+# The audit log and the taint/approval state live on the service's
+# disk (./data). On the free tier the disk is ephemeral — a restart
+# keeps the audit log only if a persistent disk is attached. For a
+# real deployment, attach a disk or ship the log to object storage.
+services:
+  - type: web
+    name: agent-gateway
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: >-
+      uvicorn gateway.demo_server:create_demo_server --factory
+      --host 0.0.0.0 --port 8001 &
+      uvicorn gateway.server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GATEWAY_ADMIN_KEY
+        generateValue: true
+      - key: UPSTREAM_URL
+        value: http://127.0.0.1:8001/mcp
+      - key: PYTHONUNBUFFERED
+        value: "1"

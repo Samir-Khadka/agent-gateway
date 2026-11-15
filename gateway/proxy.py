@@ -117,6 +117,38 @@ class Gateway:
             policies[policy.agent] = policy
         return policies
 
+    def save_policy(self, agent: str, data: dict) -> Policy:
+        """Validate and save a policy, then reload it live. Raises
+        ValueError with a readable reason when the policy is
+        invalid — the old file is left untouched."""
+        import yaml
+        policy = Policy.from_dict(data)
+        if policy.agent != agent:
+            raise ValueError(
+                f"policy agent is {policy.agent!r}, expected {agent!r}")
+        if not policy.allow and not policy.require_approval:
+            raise ValueError(
+                "a policy needs at least one allow or require_approval "
+                "rule — an empty policy denies everything")
+        # validate every rule the way evaluate() will read it
+        for section in ("allow", "require_approval",
+                        "deny_when_tainted"):
+            for rule in getattr(policy, section):
+                if not isinstance(rule, dict) or not rule.get("tool"):
+                    raise ValueError(
+                        f"{section}: every rule needs a tool")
+                for key in rule:
+                    if key not in ("tool", "where", "when", "limits"):
+                        raise ValueError(
+                            f"{section}: unknown key {key!r} in a rule")
+        path = self.policy_dir / f"{agent}.yaml"
+        text = yaml.safe_dump(policy.to_dict(), sort_keys=False,
+                              allow_unicode=True)
+        path.write_text(text, encoding="utf-8")
+        # reload from disk, so what is saved is what runs
+        self.policies[agent] = Policy.from_file(path)
+        return self.policies[agent]
+
     def _killed_path(self) -> Path:
         return self.data_dir / "killed.json"
 
@@ -244,7 +276,7 @@ class Gateway:
 
 
 def create_app(gateway: Gateway) -> FastAPI:
-    app = FastAPI(title="Agent Gateway", version="0.5.0")
+    app = FastAPI(title="Agent Gateway", version="0.6.0")
 
     def _agent(request: Request) -> str:
         key = request.headers.get("x-agent-key")
@@ -435,6 +467,35 @@ def create_app(gateway: Gateway) -> FastAPI:
     def policies(request: Request):
         _admin(request)
         return {"agents": sorted(gateway.policies)}
+
+    @app.get("/admin/editor")
+    def policy_editor_page():
+        from .policy_editor import render_editor_page
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(render_editor_page())
+
+    @app.get("/admin/policies/{agent}")
+    def get_policy(agent: str, request: Request):
+        _admin(request)
+        policy = gateway.policy_for(agent)
+        if policy is None:
+            raise HTTPException(404, f"no policy for agent {agent}")
+        return policy.to_dict()
+
+    @app.post("/admin/policies/{agent}")
+    async def save_policy(agent: str, request: Request):
+        _admin(request)
+        try:
+            data = await request.json()
+        except ValueError:
+            raise HTTPException(400, "invalid JSON")
+        if not isinstance(data, dict):
+            raise HTTPException(400, "policy must be a JSON object")
+        try:
+            policy = gateway.save_policy(agent, data)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return policy.to_dict()
 
     @app.get("/admin/dashboard")
     def dashboard(request: Request, agent: str | None = None,

@@ -68,6 +68,21 @@ class Policy:
         return cls.from_dict(
             yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {})
 
+    def to_dict(self) -> dict:
+        """The policy as a plain dict, ready to dump as YAML. Empty
+        sections are left out so the file stays readable."""
+        data: dict = {"agent": self.agent,
+                      "risk_tier": self.risk_tier}
+        for key in ("allow", "require_approval", "deny_when_tainted",
+                    "budgets", "costs", "egress_allowlist",
+                    "taint_sources"):
+            value = getattr(self, key)
+            if value:
+                data[key] = value
+        if self.kill_switch:
+            data["kill_switch"] = True
+        return data
+
     def cost_of(self, tool: str) -> float:
         """What one call of this tool costs (dollars)."""
         return float(self.costs.get(tool, 0.0))

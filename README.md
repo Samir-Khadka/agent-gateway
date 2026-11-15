@@ -201,11 +201,37 @@ Admin endpoints (need `X-Admin-Key`): `GET /admin/audit`,
   (`CONTRIBUTING.md` — fail closed, denials must say why, the
   audit log is append-only, no new dependencies without a reason).
 
+## v0.6 — policy editor, deployment, a realistic agent (first real deployment)
+
+- **Policy editor.** `GET /admin/editor` is a browser page for
+  editing a policy without hand-editing YAML: add/remove allow,
+  approval, and taint rules, set budgets and costs, edit the egress
+  allowlist and taint sources, flip the kill switch. Saving
+  validates the policy the same way the gateway does at startup —
+  an empty policy, a rule without a tool, or a mismatched agent is
+  rejected and the old file is left untouched — and the new policy
+  takes effect immediately, live, with no restart.
+  (`GET /admin/policies/{agent}`, `POST /admin/policies/{agent}`.)
+- **Deployment.** `render.yaml` (a Render Blueprint), a
+  `Dockerfile`, `gateway/server.py` (the entry point, configured
+  from env vars), and `DEPLOY.md`. A live Render deploy waits for
+  1 Dec — Samir's workspace is suspended until then — but Docker
+  and local both work now. The guide is honest about what a real
+  deployment needs: a persistent disk for the audit log, your own
+  tool server as `UPSTREAM_URL`, a real admin key, HTTPS.
+- **A realistic agent.** `examples/support_agent.py` runs a
+  support agent's shift through the gateway: a ticket comes in,
+  the agent reads the customer, fetches the billing help page —
+  which has been poisoned with an instruction to email the
+  customer list out — and the gateway blocks the exfiltration
+  while the legitimate work (an internal email, a small refund)
+  still completes. The audit log verifies intact at the end.
+
 ## Roadmap
 
-- **v0.6** — the first real deployment: a hosted demo, a
-  policy-editor UI, and the benchmark run against a real agent
-  (not the demo server).
+- **v0.7** — the benchmark against a real LLM agent (not the
+  scripted one), a hosted demo once Render resets, and the
+  open-source launch announcement.
 - **v0.5 (Phase 5–6)** — fail-closed load tests, published latency
   numbers, open-source launch with the attack benchmark.
 
