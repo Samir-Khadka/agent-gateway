@@ -97,6 +97,9 @@ class Gateway:
             os.environ.get("SLACK_WEBHOOK_URL")
         self.slack_signing_secret = slack_signing_secret or \
             os.environ.get("SLACK_SIGNING_SECRET")
+        # the interactive demo page is off by default — it embeds a
+        # demo-only agent key, so it must be enabled explicitly
+        self.demo_page = os.environ.get("GATEWAY_DEMO_PAGE") == "1"
         self.taint = TaintTracker(self.data_dir / "tainted.json")
         self.approvals = ApprovalStore(self.data_dir / "approvals.json")
         self.policies = self._load_policies()
@@ -162,10 +165,39 @@ class Gateway:
                 raise ValueError(
                     f"policy fails its test cases: {names}")
         path = self.policy_dir / f"{agent}.yaml"
+        # keep the previous version, so a bad edit can be rolled
+        # back — the history lives next to the policies, one file
+        # per save, newest first
+        if path.exists():
+            history = self.policy_dir / ".history" / agent
+            history.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            import shutil
+            shutil.copyfile(path, history / f"{stamp}.yaml")
         text = yaml.safe_dump(policy.to_dict(), sort_keys=False,
                               allow_unicode=True)
         path.write_text(text, encoding="utf-8")
         # reload from disk, so what is saved is what runs
+        self.policies[agent] = Policy.from_file(path)
+        return self.policies[agent]
+
+    def policy_history(self, agent: str) -> list[str]:
+        """The saved versions of a policy, newest first."""
+        history = self.policy_dir / ".history" / agent
+        if not history.exists():
+            return []
+        return sorted((p.name for p in history.glob("*.yaml")),
+                      reverse=True)
+
+    def restore_policy(self, agent: str, version: str) -> Policy:
+        """Roll a policy back to a saved version. Raises ValueError
+        when the version does not exist."""
+        import shutil
+        src = self.policy_dir / ".history" / agent / version
+        if not src.exists():
+            raise ValueError(f"no such version: {version}")
+        path = self.policy_dir / f"{agent}.yaml"
+        shutil.copyfile(src, path)
         self.policies[agent] = Policy.from_file(path)
         return self.policies[agent]
 
@@ -303,7 +335,7 @@ class Gateway:
 
 
 def create_app(gateway: Gateway) -> FastAPI:
-    app = FastAPI(title="Agent Gateway", version="0.8.0")
+    app = FastAPI(title="Agent Gateway", version="0.9.0")
 
     def _agent(request: Request) -> str:
         key = request.headers.get("x-agent-key")
@@ -320,6 +352,15 @@ def create_app(gateway: Gateway) -> FastAPI:
     @app.get("/health")
     def health():
         return {"status": "ok", "agents": sorted(gateway.policies)}
+
+    @app.get("/demo")
+    def demo_page():
+        if not gateway.demo_page:
+            raise HTTPException(
+                404, "the demo page is off — set GATEWAY_DEMO_PAGE=1")
+        from .demo_page import render_demo_page
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(render_demo_page())
 
     @app.post("/mcp")
     async def mcp(request: Request):
@@ -530,6 +571,21 @@ def create_app(gateway: Gateway) -> FastAPI:
             policy = gateway.save_policy(agent, data, cases=cases)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+        return policy.to_dict()
+
+    @app.get("/admin/policies/{agent}/history")
+    def policy_history(agent: str, request: Request):
+        _admin(request)
+        return {"agent": agent,
+                "versions": gateway.policy_history(agent)}
+
+    @app.post("/admin/policies/{agent}/restore/{version}")
+    def restore_policy(agent: str, version: str, request: Request):
+        _admin(request)
+        try:
+            policy = gateway.restore_policy(agent, version)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
         return policy.to_dict()
 
     @app.get("/admin/dashboard")

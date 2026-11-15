@@ -267,10 +267,25 @@ Admin endpoints (need `X-Admin-Key`): `GET /admin/audit`,
   silently break the behaviour the tests pin down. The old file is
   left untouched.
 
+## v0.9 — policy versioning, and an interactive demo page
+
+- **Policy versioning.** Every save keeps the previous version
+  (`policies/.history/<agent>/<timestamp>.yaml`), so a bad edit
+  can be rolled back: `GET /admin/policies/{agent}/history` lists
+  the versions, `POST /admin/policies/{agent}/restore/{version}`
+  restores one. The editor is now safe to use without fear — the
+  worst an edit can do is cost one restore.
+- **Interactive demo page.** `GET /demo` runs the gateway's four
+  sessions in the browser, live: click "Run" and watch each call
+  come back allowed, blocked, or held. It is off by default
+  (`GATEWAY_DEMO_PAGE=1` to enable it), because it embeds the
+  demo-only agent key — which only grants the demo agent's policy,
+  and is labelled as such on the page.
+
 ## Roadmap
 
-- **v0.9 (1 Dec)** — the hosted demo goes live once Render resets,
-  and the launch announcement is published.
+- **v1.0 (1 Dec)** — the hosted demo goes live once Render resets,
+  the launch announcement is published, and the version hits 1.0.
 - **v0.5 (Phase 5–6)** — fail-closed load tests, published latency
   numbers, open-source launch with the attack benchmark.
 
